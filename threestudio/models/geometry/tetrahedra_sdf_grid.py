@@ -12,7 +12,6 @@ from threestudio.models.geometry.base import (
     BaseGeometry,
     contract_to_unisphere,
 )
-from threestudio.models.geometry.implicit_sdf import ImplicitSDF
 from threestudio.models.geometry.implicit_volume import ImplicitVolume
 from threestudio.models.isosurface import MarchingTetrahedraHelper
 from threestudio.models.mesh import Mesh
@@ -311,35 +310,6 @@ class TetrahedraSDFGrid(BaseExplicitGeometry):
             instance.sdf.data = (
                 mesh.extras["grid_level"].to(instance.sdf.data).clamp(-1, 1)
             )
-            if not instance.cfg.geometry_only and copy_net:
-                instance.encoding.load_state_dict(other.encoding.state_dict())
-                instance.feature_network.load_state_dict(
-                    other.feature_network.state_dict()
-                )
-            return instance
-        elif isinstance(other, ImplicitSDF):
-            instance = TetrahedraSDFGrid(cfg, **kwargs)
-            if other.cfg.isosurface_method != "mt":
-                other.cfg.isosurface_method = "mt"
-                threestudio.warn(
-                    f"Override isosurface_method of the source geometry to 'mt'"
-                )
-            if other.cfg.isosurface_resolution != instance.cfg.isosurface_resolution:
-                other.cfg.isosurface_resolution = instance.cfg.isosurface_resolution
-                threestudio.warn(
-                    f"Override isosurface_resolution of the source geometry to {instance.cfg.isosurface_resolution}"
-                )
-            mesh = other.isosurface()
-            instance.isosurface_bbox = mesh.extras["bbox"]
-            instance.sdf.data = mesh.extras["grid_level"].to(instance.sdf.data)
-            if (
-                instance.cfg.isosurface_deformable_grid
-                and other.cfg.isosurface_deformable_grid
-            ):
-                assert instance.deformation is not None
-                instance.deformation.data = mesh.extras["grid_deformation"].to(
-                    instance.deformation.data
-                )
             if not instance.cfg.geometry_only and copy_net:
                 instance.encoding.load_state_dict(other.encoding.state_dict())
                 instance.feature_network.load_state_dict(

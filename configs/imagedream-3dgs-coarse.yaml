@@ -1,0 +1,138 @@
+name: "imagedream-3dgs-coarse"
+tag: "${rmspace:${system.prompt_processor.prompt},_}"
+exp_root_dir: "outputs"
+seed: 0
+
+data_type: "mvdream-random-multiview-camera-datamodule"
+data:
+  batch_size: [4,4,4]
+  n_view: 4
+  # 0-4999: 64x64, >=5000: 256x256
+  width: [64, 192,256]
+  height: [64, 192, 256]
+  eval_width: 256
+  eval_height: 256
+  resolution_milestones: [3500, 7000]
+  camera_distance_range: [1.3, 1.5] #[0.8, 0.95]  # [0.73, 1.0] # relative
+  fovy_range: [40, 50] #[15, 60]
+  elevation_range: [0, 5] # [0, 30]
+  camera_perturb: 0.
+  center_perturb: 0.
+  up_perturb: 0.
+  n_val_views: 4
+  eval_camera_distance: 4.5 # 3.5
+  eval_fovy_deg: 40.
+  rays_d_normalize: false
+
+system_type: "gaussian-splatting-mvdream-system"
+system:
+  image: true
+  geometry_type: "gaussian-splatting"
+  geometry:
+    position_lr_init: 0.001
+    position_lr_final: 0.00002
+    position_lr_delay_mult: 0.02
+    position_lr_max_steps: 2000 # 1000
+    scale_lr_init: 0.005
+    scale_lr_final: 0.005
+    scale_lr_max_steps: ${trainer.max_steps}
+    feature_lr: 0.01
+    opacity_lr: 0.05
+    scaling_lr: 0.005
+    rotation_lr: 0.005
+    densification_interval: 300
+    prune_interval: 300 # 500
+    opacity_reset_interval: 100000 # 50000000
+    densify_from_iter: 1500
+    densify_until_iter: ${trainer.max_steps} # 10000
+    prune_from_iter: 1500
+    prune_until_iter: ${trainer.max_steps}
+    densify_grad_threshold: 150 # 0.0002 # 
+    min_opac_prune: 0.001
+    split_thresh: 0.001 # fix
+    radii2d_thresh: 2000
+
+    init_num_pts: 1024
+    pc_init_radius: 0.4
+    opacity_init: 0.01 # 0.2
+
+  renderer_type: "diff-gaussian-rasterizer-shading"
+  renderer:
+    debug: false
+    #invert_bg_prob: 0.5 # no shading only
+
+  #material_type: "no-material" # unused
+  #material:
+    #n_output_dims: 0
+  material_type: "gaussian-diffuse-with-point-light-material"
+  material:
+    ambient_only_steps: 3500
+    textureless_prob: 0.0 # 0.5
+    ambient_light_color: [0.9, 0.9, 0.9] # [1.0, 1.0, 1.0]
+    diffuse_light_color: [0.1, 0.1, 0.1] # [0.0, 0.0, 0.0]
+    soft_shading: true
+
+  background_type: "gaussian-mvdream-neural-environment-map-background"
+  background:
+    color_activation: sigmoid
+    random_aug: false
+    share_aug_bg: false
+    #random_aug_prob: 1.0
+
+  prompt_processor_type: "stable-diffusion-prompt-processor"
+  prompt_processor:
+    pretrained_model_name_or_path: "stabilityai/stable-diffusion-2-1-base"
+    prompt: ???
+    negative_prompt: "ugly, bad anatomy, blurry, pixelated obscure, unnatural colors, poor lighting, dull, and unclear, cropped, lowres, low quality, artifacts, duplicate, morbid, mutilated, poorly drawn face, deformed, dehydrated, bad proportions"
+    front_threshold: 30.
+    back_threshold: 30.
+
+  guidance_type: "image-multiview-diffusion-guidance"
+  guidance:
+    model_name: "sd-v2.1-base-4view-ipmv"
+    ckpt_path: null # path to a pre-downloaded checkpoint file (null for loading from URL)
+    guidance_scale: 50.0
+    min_step_percent: [0, 0.98, 0.02, 8000]  # (start_iter, start_val, end_val, end_iter)
+    max_step_percent: [0, 0.98, 0.50, 8000]
+    recon_loss: true
+    recon_std_rescale: 0.5
+    ip_mode: "pixel"
+
+  exporter_type: "gaussian-mesh-exporter"
+
+  loggers:
+    wandb:
+      enable: false
+      project: 'threestudio'
+      name: None
+
+  loss:
+    lambda_sds: 1
+    lambda_position: 0
+    lambda_opacity: 0 # 0.0001
+    lambda_scales: 0 # .005
+    lambda_tv_loss: 0
+    lambda_depth_tv_loss: 0
+
+  optimizer:
+    name: Adam
+    args:
+      lr: 0.01
+      betas: [0.9, 0.99]
+      eps: 1.e-15
+    params:
+      background:
+        lr: 0.001
+
+trainer:
+  max_steps: 14000
+  log_every_n_steps: 1
+  num_sanity_val_steps: 0
+  val_check_interval: 100
+  enable_progress_bar: true
+  precision: 32-true
+
+checkpoint:
+  save_last: true # save at each validation time
+  save_top_k: -1
+  every_n_train_steps: ${trainer.max_steps}

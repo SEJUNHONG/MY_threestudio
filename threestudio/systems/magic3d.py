@@ -104,14 +104,7 @@ class Magic3D(BaseLift3DSystem):
                 ]
                 if "comp_normal" in out
                 else []
-            )
-            + [
-                {
-                    "type": "grayscale",
-                    "img": out["opacity"][0, :, :, 0],
-                    "kwargs": {"cmap": None, "data_range": (0, 1)},
-                },
-            ],
+            ),
             name="validation_step",
             step=self.true_global_step,
         )
@@ -140,14 +133,7 @@ class Magic3D(BaseLift3DSystem):
                 ]
                 if "comp_normal" in out
                 else []
-            )
-            + [
-                {
-                    "type": "grayscale",
-                    "img": out["opacity"][0, :, :, 0],
-                    "kwargs": {"cmap": None, "data_range": (0, 1)},
-                },
-            ],
+            ),
             name="test_step",
             step=self.true_global_step,
         )

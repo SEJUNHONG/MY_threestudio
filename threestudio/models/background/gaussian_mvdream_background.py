@@ -1,18 +1,17 @@
 import random
 from dataclasses import dataclass, field
 
+import threestudio
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-import threestudio
 from threestudio.models.background.base import BaseBackground
 from threestudio.models.networks import get_encoding, get_mlp
 from threestudio.utils.ops import get_activation
 from threestudio.utils.typing import *
 
 
-@threestudio.register("neural-environment-map-background")
+@threestudio.register("gaussian-mvdream-neural-environment-map-background")
 class NeuralEnvironmentMapBackground(BaseBackground):
     @dataclass
     class Config(BaseBackground.Config):
@@ -63,9 +62,11 @@ class NeuralEnvironmentMapBackground(BaseBackground):
         ):
             # use random background color with probability random_aug_prob
             n_color = 1 if self.cfg.share_aug_bg else dirs.shape[0]
+            value = random.random() < 0.5
             color = color * 0 + (  # prevent checking for unused parameters in DDP
-                torch.rand(n_color, 1, 1, self.cfg.n_output_dims)
+                torch.ones(n_color, 1, 1, self.cfg.n_output_dims)
                 .to(dirs)
                 .expand(*dirs.shape[:-1], -1)
+                * value
             )
         return color

@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from transformers import AutoTokenizer, BertForMaskedLM
+from PIL import Image
 
 import threestudio
 from threestudio.utils.base import BaseObject
@@ -47,8 +48,7 @@ class PromptProcessorOutput:
     perp_neg_f_fsb: Tuple[float, float, float]
     perp_neg_f_fs: Tuple[float, float, float]
     perp_neg_f_sf: Tuple[float, float, float]
-    prompt: str
-    prompts_vd: List[str]
+    image: Any
 
     def get_text_embeddings(
         self,
@@ -176,9 +176,10 @@ class PromptProcessor(BaseObject):
     @dataclass
     class Config(BaseObject.Config):
         prompt: str = "a hamburger"
-
+        image_path: Optional[str] = None
+        image: Optional[Any] = None
+        
         # manually assigned view-dependent prompts
-        prompt_front: Optional[str] = None
         prompt_side: Optional[str] = None
         prompt_back: Optional[str] = None
         prompt_overhead: Optional[str] = None
@@ -295,11 +296,8 @@ class PromptProcessor(BaseObject):
 
         self.direction2idx = {d.name: i for i, d in enumerate(self.directions)}
 
-        if os.path.exists("load/prompt_library.json"):
-            with open(os.path.join("load/prompt_library.json"), "r") as f:
-                self.prompt_library = json.load(f)
-        else:
-            self.prompt_library = {}
+        with open(os.path.join("load/prompt_library.json"), "r") as f:
+            self.prompt_library = json.load(f)
         # use provided prompt or find prompt in library
         self.prompt = self.preprocess_prompt(self.cfg.prompt)
         # use provided negative prompt
@@ -322,7 +320,7 @@ class PromptProcessor(BaseObject):
             ]
         else:
             self.prompts_vd = [
-                self.cfg.get(f"prompt_{d.name}", None) or d.prompt(self.prompt)  # type: ignore
+                d.prompt(self.cfg.get(f"prompt_{d.name}", None) or self.prompt)  # type: ignore
                 for d in self.directions
             ]
 
@@ -384,7 +382,6 @@ class PromptProcessor(BaseObject):
                 )
                 subprocess.start()
                 subprocess.join()
-                assert subprocess.exitcode == 0, "prompt embedding process failed!"
             else:
                 self.spawn_func(
                     self.cfg.pretrained_model_name_or_path,
@@ -504,15 +501,18 @@ class PromptProcessor(BaseObject):
         cleanup()
 
         return debiased_prompts
+    
+    def get_image(self, image_path: str = None):
+        if image_path is None:
+            return None
+        return Image.open(image_path)
 
     def __call__(self) -> PromptProcessorOutput:
         return PromptProcessorOutput(
             text_embeddings=self.text_embeddings,
             uncond_text_embeddings=self.uncond_text_embeddings,
-            prompt=self.prompt,
             text_embeddings_vd=self.text_embeddings_vd,
             uncond_text_embeddings_vd=self.uncond_text_embeddings_vd,
-            prompts_vd=self.prompts_vd,
             directions=self.directions,
             direction2idx=self.direction2idx,
             use_perp_neg=self.cfg.use_perp_neg,
@@ -520,4 +520,5 @@ class PromptProcessor(BaseObject):
             perp_neg_f_fsb=self.cfg.perp_neg_f_fsb,
             perp_neg_f_fs=self.cfg.perp_neg_f_fs,
             perp_neg_f_sf=self.cfg.perp_neg_f_sf,
+            image=self.get_image(self.cfg.image_path)
         )

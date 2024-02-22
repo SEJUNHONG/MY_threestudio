@@ -1,18 +1,17 @@
 import random
 from dataclasses import dataclass, field
 
+import threestudio
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-import threestudio
 from threestudio.models.materials.base import BaseMaterial
 from threestudio.utils.ops import dot, get_activation
 from threestudio.utils.typing import *
 
 
-@threestudio.register("diffuse-with-point-light-material")
-class DiffuseWithPointLightMaterial(BaseMaterial):
+@threestudio.register("gaussian-diffuse-with-point-light-material")
+class GaussianDiffuseWithPointLightMaterial(BaseMaterial):
     @dataclass
     class Config(BaseMaterial.Config):
         ambient_light_color: Tuple[float, float, float] = (0.1, 0.1, 0.1)
@@ -20,7 +19,6 @@ class DiffuseWithPointLightMaterial(BaseMaterial):
         ambient_only_steps: int = 1000
         diffuse_prob: float = 0.75
         textureless_prob: float = 0.5
-        albedo_activation: str = "sigmoid"
         soft_shading: bool = False
 
     cfg: Config
@@ -42,16 +40,14 @@ class DiffuseWithPointLightMaterial(BaseMaterial):
 
     def forward(
         self,
-        features: Float[Tensor, "B ... Nf"],
         positions: Float[Tensor, "B ... 3"],
         shading_normal: Float[Tensor, "B ... 3"],
         light_positions: Float[Tensor, "B ... 3"],
+        albedo: Float[Tensor, "B ... 3"],
         ambient_ratio: Optional[float] = None,
         shading: Optional[str] = None,
         **kwargs,
     ) -> Float[Tensor, "B ... 3"]:
-        albedo = get_activation(self.cfg.albedo_activation)(features[..., :3])
-
         if ambient_ratio is not None:
             # if ambient ratio is specified, use it
             diffuse_light_color = (1 - ambient_ratio) * torch.ones_like(
