@@ -345,11 +345,11 @@ def get_cam_info_gaussian(c2w, fovx, fovy, znear, zfar):
     c2w = convert_pose(c2w)
     world_view_transform = torch.inverse(c2w)
 
-    world_view_transform = world_view_transform.transpose(0, 1).cuda().float()
+    world_view_transform = world_view_transform.transpose(0, 1).to(device=c2w.device, dtype=torch.float32)
     projection_matrix = (
-        get_projection_matrix_gaussian(znear=znear, zfar=zfar, fovX=fovx, fovY=fovy)
+        get_projection_matrix_gaussian(znear=znear, zfar=zfar, fovX=fovx, fovY=fovy, device=c2w.device)
         .transpose(0, 1)
-        .cuda()
+        .to(device=c2w.device, dtype=torch.float32)
     )
     full_proj_transform = (
         world_view_transform.unsqueeze(0).bmm(projection_matrix.unsqueeze(0))

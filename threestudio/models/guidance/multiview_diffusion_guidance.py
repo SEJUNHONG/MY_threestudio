@@ -17,6 +17,7 @@ from threestudio.models.prompt_processors.base import PromptProcessorOutput
 from threestudio.utils.base import BaseModule
 from threestudio.utils.misc import C, cleanup, parse_version
 from threestudio.utils.typing import *
+from threestudio.utils.integration import validate_view_batch, append_group_view, background_rgb
 
 @threestudio.register("multiview-diffusion-guidance")
 class MultiviewDiffusionGuidance(BaseModule):
@@ -50,7 +51,9 @@ class MultiviewDiffusionGuidance(BaseModule):
         for p in self.model.parameters():
             p.requires_grad_(False)
         
-        self.num_train_timesteps = 1000
+        self.model.eval()
+        self.register_buffer("alphas_cumprod", self.model.alphas_cumprod.detach().clone(), persistent=False)
+        self.num_train_timesteps = len(self.alphas_cumprod)
         min_step_percent = C(self.cfg.min_step_percent, 0, 0)
         max_step_percent = C(self.cfg.max_step_percent, 0, 0)
         self.min_step = int( self.num_train_timesteps * min_step_percent )
@@ -96,7 +99,9 @@ class MultiviewDiffusionGuidance(BaseModule):
         input_is_latent=False,
         **kwargs,
     ):
+        self.model.eval()
         batch_size = rgb.shape[0]
+        validate_view_batch(batch_size, self.cfg.n_view)
         camera = c2w
 
         rgb_BCHW = rgb.permute(0, 3, 1, 2)
@@ -185,6 +190,7 @@ class MultiviewDiffusionGuidance(BaseModule):
         }
 
     def update_step(self, epoch: int, global_step: int, on_load_weights: bool = False):
+        self.grad_clip_val = C(self.cfg.grad_clip, epoch, global_step) if self.cfg.grad_clip is not None else None
         min_step_percent = C(self.cfg.min_step_percent, epoch, global_step)
         max_step_percent = C(self.cfg.max_step_percent, epoch, global_step)
         self.min_step = int( self.num_train_timesteps * min_step_percent )

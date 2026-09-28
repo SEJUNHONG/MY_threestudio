@@ -14,6 +14,7 @@ from threestudio.models.geometry.base import BaseGeometry
 from threestudio.models.materials.base import BaseMaterial
 from threestudio.models.renderers.base import Rasterizer
 from threestudio.utils.typing import *
+from threestudio.utils.integration import unpack_rasterizer
 
 from threestudio.models.materials.gaussian_material import GaussianDiffuseWithPointLightMaterial
 
@@ -91,7 +92,7 @@ class DiffGaussian(Rasterizer):
         # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
         screenspace_points = (
             torch.zeros_like(
-                pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda"
+                pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device=pc.get_xyz.device
             )
             + 0
         )
@@ -116,7 +117,7 @@ class DiffGaussian(Rasterizer):
             sh_degree=pc.active_sh_degree,
             campos=viewpoint_camera.camera_center,
             prefiltered=False,
-            debug=False,
+            debug=self.cfg.debug,
         )
 
         rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -148,9 +149,11 @@ class DiffGaussian(Rasterizer):
         rays_o = kwargs["rays_o"][batch_idx]
         # rays_d_flatten: Float[Tensor, "Nr 3"] = rays_d.unsqueeze(0)
 
-        comp_rgb_bg = self.background(dirs=rays_d.unsqueeze(0))
+        comp_rgb_bg = kwargs.get("view_background")
+        if comp_rgb_bg is None:
+            comp_rgb_bg = self.background(dirs=F.normalize(rays_d.unsqueeze(0), dim=-1))
 
-        rendered_image, radii, rendered_depth, rendered_alpha = rasterizer(
+        raster_result = rasterizer(
             means3D=means3D,
             means2D=means2D,
             shs=shs,
@@ -160,7 +163,8 @@ class DiffGaussian(Rasterizer):
             rotations=rotations,
             cov3D_precomp=cov3D_precomp,
         )
-        batch_size, H, W = rendered_image.shape
+        rendered_image, radii, rendered_depth, rendered_alpha = unpack_rasterizer(raster_result)
+        _, H, W = rendered_image.shape
 
         xyz_map = rays_o + rendered_depth.permute(1, 2, 0) * rays_d
         normal_map = self.normal_module(xyz_map.permute(2, 0, 1).unsqueeze(0))[0]
@@ -193,7 +197,7 @@ class DiffGaussian(Rasterizer):
         # They will be excluded from value updates used in the splitting criteria.
         return {
             "render": rendered_image.clamp(0, 1),
-            "comp_rgb_bg": comp_rgb_bg.view(batch_size, H, W, -1),
+            "comp_rgb_bg": comp_rgb_bg.reshape(1, H, W, 3),
             "normal": normal_map,
             "mask": rendered_alpha,
             "depth": rendered_depth,

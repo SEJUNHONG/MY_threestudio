@@ -9,6 +9,7 @@ from threestudio.systems.utils import parse_optimizer, parse_scheduler
 from threestudio.utils.loss import tv_loss
 from threestudio.utils.ops import get_cam_info_gaussian
 from threestudio.utils.typing import *
+from threestudio.utils.integration import horizontal_fov
 from torch.cuda.amp import autocast
 
 from threestudio.models.geometry.gaussian_base import BasicPointCloud, Camera
@@ -30,15 +31,19 @@ class MVDreamSystem(BaseLift3DSystem):
         super().configure()
         self.automatic_optimization = False
 
-        self.background_tensor = torch.tensor(
-            self.cfg.back_ground_color, dtype=torch.float32, device="cuda"
-        )
+        if self.cfg.refinement:
+            raise ValueError("Gaussian refinement has no mesh output; use the NeRF/DMTet refine configuration")
+        self.register_buffer("background_tensor", torch.tensor(
+            self.cfg.back_ground_color, dtype=torch.float32, device=self.device
+        ), persistent=False)
 
         self.guidance = threestudio.find(self.cfg.guidance_type)(self.cfg.guidance)
         self.prompt_processor = threestudio.find(self.cfg.prompt_processor_type)(
             self.cfg.prompt_processor
         )
         self.prompt_utils = self.prompt_processor()
+        if self.cfg.image and self.prompt_utils.image is None:
+            raise ValueError("ImageDream requires system.prompt_processor.image_path")
 
     def configure_optimizers(self):
         optim = self.geometry.optimizer
@@ -58,6 +63,8 @@ class MVDreamSystem(BaseLift3DSystem):
         )
         self.geometry.create_from_pcd(pcd, 10)
         self.geometry.training_setup()
+        for name in ("max_radii2D", "xyz_gradient_accum", "denom"):
+            checkpoint["state_dict"].setdefault("geometry." + name, getattr(self.geometry, name).clone())
         return
 
     def forward(self, batch: Dict[str, Any]) -> Dict[str, Any]:
@@ -71,6 +78,8 @@ class MVDreamSystem(BaseLift3DSystem):
             self.geometry.update_scale_learning_rate(self.global_step)
 
         bs = batch["c2w"].shape[0]
+        # One call preserves share_aug_bg across the complete multi-view batch.
+        all_backgrounds = self.background(dirs=torch.nn.functional.normalize(batch["rays_d"], dim=-1))
         renders = []
         comp_rgb_bgs = []
         viewspace_points = []
@@ -79,15 +88,16 @@ class MVDreamSystem(BaseLift3DSystem):
         normals = []
         depths = []
         for batch_idx in range(bs):
-            batch["batch_idx"] = batch_idx
+            view_batch = dict(batch, batch_idx=batch_idx, view_background=all_backgrounds[batch_idx:batch_idx + 1])
             fovy = batch["fovy"][batch_idx]
+            fovx = horizontal_fov(fovy, batch["width"], batch["height"])
             w2c, proj, cam_p = get_cam_info_gaussian(
-                c2w=batch["c2w"][batch_idx], fovx=fovy, fovy=fovy, znear=0.1, zfar=100
+                c2w=batch["c2w"][batch_idx], fovx=fovx, fovy=fovy, znear=0.1, zfar=100
             )
 
             # import pdb; pdb.set_trace()
             viewpoint_cam = Camera(
-                FoVx=fovy,
+                FoVx=fovx,
                 FoVy=fovy,
                 image_width=batch["width"],
                 image_height=batch["height"],
@@ -98,7 +108,7 @@ class MVDreamSystem(BaseLift3DSystem):
 
             with autocast(enabled=False):
                 render_pkg = self.renderer(
-                    viewpoint_cam, self.background_tensor, **batch
+                    viewpoint_cam, self.background_tensor, **view_batch
                 )
                 renders.append(render_pkg["render"])
                 comp_rgb_bgs.append(render_pkg["comp_rgb_bg"])
@@ -112,7 +122,7 @@ class MVDreamSystem(BaseLift3DSystem):
 
         outputs = {
             "comp_rgb": torch.stack(renders, dim=0).permute(0, 2, 3, 1),
-            "comp_rgb_bg": render_pkg["comp_rgb_bg"], 
+            "comp_rgb_bg": torch.cat(comp_rgb_bgs, dim=0),
             "viewspace_points": viewspace_points,
             "visibility_filter": visibility_filters,
             "radii": radiis,
@@ -124,6 +134,8 @@ class MVDreamSystem(BaseLift3DSystem):
                     #"comp_depth": torch.stack(depths, dim=0).permute(0, 2, 3, 1),
                 }
             )
+        if depths:
+            outputs["comp_depth"] = torch.stack(depths).permute(0, 2, 3, 1)
         return outputs
 
     def training_step(self, batch, batch_idx):
@@ -131,6 +143,11 @@ class MVDreamSystem(BaseLift3DSystem):
             opt = self.optimizers()
         else:
             opt, net_opt = self.optimizers()
+        if self.trainer.precision not in (32, "32", "32-true"):
+            raise ValueError("Gaussian manual optimization currently requires precision=32-true")
+        opt.zero_grad(set_to_none=True)
+        if self.optim_num > 1:
+            net_opt.zero_grad(set_to_none=True)
         out = self(batch)
 
         visibility_filter = out["visibility_filter"]
@@ -211,20 +228,18 @@ class MVDreamSystem(BaseLift3DSystem):
         for name, value in self.cfg.loss.items():
             self.log(f"train_params/{name}", self.C(value))
 
-        loss.backward(retain_graph=True)
+        if not torch.isfinite(loss):
+            raise FloatingPointError("Non-finite Gaussian training loss")
+        self.manual_backward(loss)
         iteration = self.global_step
-        self.geometry.update_states(
-            iteration,
-            visibility_filter,
-            radii,
-            viewspace_point_tensor,
-        )
-        #if loss > 0:
-        #    loss.backward()
+        # Step existing parameters BEFORE densification replaces Parameter objects.
         opt.step()
+        if self.optim_num > 1:
+            # Exactly one Lightning step count per rendered batch. FP32 only.
+            net_opt.optimizer.step()
+        self.geometry.update_states(iteration, visibility_filter, radii, viewspace_point_tensor)
         opt.zero_grad(set_to_none=True)
         if self.optim_num > 1:
-            net_opt.step()
             net_opt.zero_grad(set_to_none=True)
 
         return {"loss": loss} # _sds}
@@ -292,7 +307,7 @@ class MVDreamSystem(BaseLift3DSystem):
         self.save_img_sequence(
             f"it{self.true_global_step}-test",
             f"it{self.true_global_step}-test",
-            "(\d+)\.png",
+            r"(\d+)\.png",
             save_format="mp4",
             fps=30,
             name="test",

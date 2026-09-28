@@ -61,7 +61,7 @@ system:
   renderer_type: "diff-gaussian-rasterizer" #-shading"
   renderer:
     debug: false
-    invert_bg_prob: 0.5 # no shading only
+    # Background augmentation is controlled by background.random_aug below.
 
   #material_type: "no-material" # unused
   #material:

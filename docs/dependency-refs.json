@@ -1,0 +1,21 @@
+{
+  "selection": "Latest public commit on or before 2024-02-22; selected during integration repair, not recovered original install SHAs",
+  "repositories": {
+    "bytedance/ImageDream": {
+      "sha": "26c3972e586f0c8d2f6c6b297aa9d792d06abebb",
+      "date": "2024-01-27T19:32:32Z"
+    },
+    "DSaurus/MVDream": {
+      "sha": "4113e669947f48af8852ee037a1de22629861aac",
+      "date": "2023-12-20T06:44:10Z"
+    },
+    "ashawkey/diff-gaussian-rasterization": {
+      "sha": "d986da0d4cf2dfeb43b9a379b6e9fa0a7f3f7eea",
+      "date": "2023-10-29T06:51:50Z"
+    },
+    "DSaurus/simple-knn": {
+      "sha": "8e18d9b2ec09f932b6208172614544267b067a7c",
+      "date": "2023-12-03T18:39:00Z"
+    }
+  }
+}

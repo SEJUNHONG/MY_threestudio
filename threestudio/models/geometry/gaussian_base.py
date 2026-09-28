@@ -280,9 +280,9 @@ class GaussianBaseModel(BaseGeometry):
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
         self._opacity = torch.empty(0)
-        self.max_radii2D = torch.empty(0)
-        self.xyz_gradient_accum = torch.empty(0)
-        self.denom = torch.empty(0)
+        self.register_buffer("max_radii2D", torch.empty(0))
+        self.register_buffer("xyz_gradient_accum", torch.empty(0))
+        self.register_buffer("denom", torch.empty(0))
         self.optimizer = None
         self.setup_functions()
 
@@ -736,6 +736,8 @@ class GaussianBaseModel(BaseGeometry):
         torch.cuda.empty_cache()
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
+        if viewspace_point_tensor.grad is None:
+            raise RuntimeError("Missing screen-space gradient; update_states must run after backward")
         self.xyz_gradient_accum[update_filter] += torch.norm(
             viewspace_point_tensor.grad[update_filter, :2], dim=-1, keepdim=True
         )
@@ -751,7 +753,7 @@ class GaussianBaseModel(BaseGeometry):
     ):
         if self._xyz.shape[0] >= self.cfg.max_num + 100:
             prune_mask = torch.randperm(self._xyz.shape[0]).to(self._xyz.device)
-            prune_mask = prune_mask > self.cfg.max_num
+            prune_mask = prune_mask >= self.cfg.max_num
             self.prune_points(prune_mask)
             return
         # Keep track of max radii in image-space for pruning

@@ -1,0 +1,17 @@
+{
+  "date": "2026-09-28",
+  "base_commit": "c894bfcaba28378aee5b7ec09e50f9b2b2516c6a",
+  "python": "3.10.12",
+  "torch": "2.8.0+cu128",
+  "cuda_available": false,
+  "tests_passed": 18,
+  "test_command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q",
+  "test_scope": "Actual Python method bodies executed with mocked external CUDA/diffusion/framework dependencies; not a full package import or GPU run",
+  "modified_or_new_python_files_syntax_checked": 12,
+  "gpu_training_executed": false,
+  "fine_tuning_executed": false,
+  "speedup_measured": false,
+  "quality_improvement_measured": false,
+  "preflight_ready": false,
+  "new_ci_executed_on_github": false
+}

@@ -19,6 +19,7 @@ from threestudio.models.prompt_processors.base import PromptProcessorOutput
 from threestudio.utils.base import BaseModule
 from threestudio.utils.misc import C, cleanup, parse_version
 from threestudio.utils.typing import *
+from threestudio.utils.integration import validate_view_batch, append_group_view, background_rgb
 
 
 @threestudio.register("image-multiview-diffusion-guidance")
@@ -26,7 +27,7 @@ class MultiviewDiffusionGuidance(BaseModule):
     @dataclass
     class Config(BaseModule.Config):
         model_name: str = (
-            "sd-v2.1-base-4view"  # check imagedream.model_zoo.PRETRAINED_MODELS
+            "sd-v2.1-base-4view-ipmv"  # check imagedream.model_zoo.PRETRAINED_MODELS
         )
         ckpt_path: Optional[
             str
@@ -58,14 +59,16 @@ class MultiviewDiffusionGuidance(BaseModule):
         threestudio.info(f"Loading Multiview Diffusion ...")
 
         self.model = build_model(
-            self.cfg.model_name, 
+            self.cfg.model_name,
             config_path=self.cfg.config_path,
             ckpt_path=self.cfg.ckpt_path)
-            
+
         for p in self.model.parameters():
             p.requires_grad_(False)
 
-        self.num_train_timesteps = 1000
+        self.model.eval()
+        self.register_buffer("alphas_cumprod", self.model.alphas_cumprod.detach().clone(), persistent=False)
+        self.num_train_timesteps = len(self.alphas_cumprod)
         min_step_percent = C(self.cfg.min_step_percent, 0, 0)
         max_step_percent = C(self.cfg.max_step_percent, 0, 0)
         self.min_step = int(self.num_train_timesteps * min_step_percent)
@@ -104,7 +107,7 @@ class MultiviewDiffusionGuidance(BaseModule):
 
     def append_extra_view(self, latent_input, t_expand, context, ip=None):
         """
-        Args: 
+        Args:
             latent_input: [BZ, C, H, W]
             context: dict that contain text, camera, image embeddings
             ip: the input image
@@ -124,18 +127,18 @@ class MultiviewDiffusionGuidance(BaseModule):
         zero_tensor = torch.zeros(real_batch_size, 1, c, h, w).to(latent_input)
         latent_input = torch.cat([latent_input, zero_tensor], dim=1)
         latent_input = latent_input.reshape(-1, c, h, w)
-        
+
         # make time expand here
-        t_expand = torch.cat([t_expand, t_expand[-1:].repeat(real_batch_size)])
-        
-        # repeat 
+        t_expand = append_group_view(t_expand, self.cfg.n_view)
+
+        # repeat
         for key in ["context", "ip"]:
             embedding = context[key] # repeat for last dim features
             features = []
             for feature in embedding.chunk(real_batch_size):
                 features.append(torch.cat([feature, feature[-1].unsqueeze(0)], dim=0))
             context[key] = torch.cat(features, dim=0)
-        
+
         # set 0
         for key in ["camera"]:
             embedding = context[key]
@@ -144,19 +147,19 @@ class MultiviewDiffusionGuidance(BaseModule):
                 zero_tensor = torch.zeros_like(feature[0]).unsqueeze(0).to(feature)
                 features.append(torch.cat([feature, zero_tensor], dim=0))
             context[key] = torch.cat(features, dim=0)
-        
-        if ip:
+
+        if ip is not None:
             ip = image_transform(ip).to(latent_input)
             ip_img = self.model.get_first_stage_encoding(
                 self.model.encode_first_stage(ip[None, :, :, :]))
             ip_pos_num = real_batch_size // 2
             ip_img = ip_img.repeat(ip_pos_num, 1, 1, 1)
             context["ip_img"] = torch.cat([
-                ip_img, 
+                ip_img,
                 torch.zeros_like(ip_img)], dim=0) # 2 * (batchsize + 1, c, h, w)
-        
+
         return latent_input, t_expand, context
-    
+
     def forward(
         self,
         rgb: Float[Tensor, "B H W C"],
@@ -172,8 +175,10 @@ class MultiviewDiffusionGuidance(BaseModule):
         input_is_latent=False,
         **kwargs,
     ):
+        self.model.eval()
         batch_size = rgb.shape[0]
-        extra_view = self.cfg.ip_mode == "pixel"    
+        validate_view_batch(batch_size, self.cfg.n_view)
+        extra_view = self.cfg.ip_mode == "pixel"
         camera = c2w
 
         rgb_BCHW = rgb.permute(0, 3, 1, 2)
@@ -181,17 +186,20 @@ class MultiviewDiffusionGuidance(BaseModule):
             text_embeddings = prompt_utils.get_text_embeddings(
                 elevation, azimuth, camera_distances, self.cfg.view_dependent_prompting
             )
-            
+
         ip = None
+        if prompt_utils.image is None:
+            raise ValueError("ImageDream requires an RGB/RGBA reference image via image_path")
         if prompt_utils.image is not None:
             ip = prompt_utils.image
             bg_color = kwargs.get("comp_rgb_bg")
-            bg_color = bg_color.mean().detach().cpu().numpy() * 255 
-            ip = add_random_background(ip, bg_color)
-            image_embeddings = self.model.get_learned_image_conditioning(ip)
+            bg_color = background_rgb(bg_color)
+            ip = add_random_background(ip.convert("RGBA"), bg_color)
+            with torch.no_grad():
+                image_embeddings = self.model.get_learned_image_conditioning(ip)
             un_image_embeddings = \
                 torch.zeros_like(image_embeddings).to(image_embeddings)
-                    
+
         if input_is_latent:
             latents = rgb
         else:
@@ -248,34 +256,34 @@ class MultiviewDiffusionGuidance(BaseModule):
                 }
             else:
                 context = {"context": text_embeddings}
-                
+
             if prompt_utils.image is not None:
                 context["ip"] = torch.cat([
-                    image_embeddings.repeat(batch_size, 1, 1), 
+                    image_embeddings.repeat(batch_size, 1, 1),
                     un_image_embeddings.repeat(batch_size, 1, 1)], dim=0).to(text_embeddings)
-            
+
             if extra_view:
                 latent_model_input, t_expand, context = \
-                    self.append_extra_view(latent_model_input, t_expand, context, ip=ip)     
-                    
+                    self.append_extra_view(latent_model_input, t_expand, context, ip=ip)
+
             noise_pred = self.model.apply_model(latent_model_input, t_expand, context)
 
         # perform guidance
         noise_pred_text, noise_pred_uncond = noise_pred.chunk(
             2
         )  # Note: flipped compared to stable-dreamfusion
-        
+
         if extra_view:
             _, c, h, w = noise_pred_text.shape
             def remove_extra_view(embedding):
                 embedding = embedding.reshape(-1, (self.cfg.n_view + 1), c, h, w)
                 embedding = embedding[:, :-1, :, :, :].reshape(-1, c, h, w)
                 return embedding
-            
+
             noise_pred_text, noise_pred_uncond = \
                 remove_extra_view(noise_pred_text), \
                 remove_extra_view(noise_pred_uncond)
-                
+
         noise_pred = noise_pred_uncond + self.cfg.guidance_scale * (
             noise_pred_text - noise_pred_uncond
         )
@@ -338,6 +346,7 @@ class MultiviewDiffusionGuidance(BaseModule):
         }
 
     def update_step(self, epoch: int, global_step: int, on_load_weights: bool = False):
+        self.grad_clip_val = C(self.cfg.grad_clip, epoch, global_step) if self.cfg.grad_clip is not None else None
         min_step_percent = C(self.cfg.min_step_percent, epoch, global_step)
         max_step_percent = C(self.cfg.max_step_percent, epoch, global_step)
         self.min_step = int(self.num_train_timesteps * min_step_percent)

@@ -14,6 +14,7 @@ from threestudio.models.geometry.base import BaseGeometry
 from threestudio.models.materials.base import BaseMaterial
 from threestudio.models.renderers.base import Rasterizer
 from threestudio.utils.typing import *
+from threestudio.utils.integration import unpack_rasterizer
 
 class Depth2Normal(torch.nn.Module):
     def __init__(self, *args, **kwargs) -> None:
@@ -52,7 +53,7 @@ class DiffGaussian(Rasterizer):
     @dataclass
     class Config(Rasterizer.Config):
         debug: bool = False
-        invert_bg_prob: float = 1.0
+        invert_bg_prob: float = 1.0  # deprecated; use background.random_aug
 
     cfg: Config
 
@@ -82,18 +83,14 @@ class DiffGaussian(Rasterizer):
         Background tensor (bg_color) must be on GPU!
         """
 
-        if self.training:
-            invert_bg_color = np.random.rand() > self.cfg.invert_bg_prob
-        else:
-            invert_bg_color = True
-
-        bg_color = bg_color if not invert_bg_color else (1.0 - bg_color)
+        # Composite the neural background once in Python, using alpha.
+        bg_color = torch.zeros_like(bg_color)
 
         pc = self.geometry
         # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
         screenspace_points = (
             torch.zeros_like(
-                pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda"
+                pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device=pc.get_xyz.device
             )
             + 0
         )
@@ -118,7 +115,7 @@ class DiffGaussian(Rasterizer):
             sh_degree=pc.active_sh_degree,
             campos=viewpoint_camera.camera_center,
             prefiltered=False,
-            debug=False,
+            debug=self.cfg.debug,
         )
 
         rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -148,7 +145,9 @@ class DiffGaussian(Rasterizer):
         rays_d = kwargs["rays_d"][batch_idx]
         rays_o = kwargs["rays_o"][batch_idx]
 
-        comp_rgb_bg = self.background(dirs=rays_d.unsqueeze(0))
+        comp_rgb_bg = kwargs.get("view_background")
+        if comp_rgb_bg is None:
+            comp_rgb_bg = self.background(dirs=F.normalize(rays_d.unsqueeze(0), dim=-1))
 
         # Rasterize visible Gaussians to image, obtain their radii (on screen).
         result_list = rasterizer(
@@ -161,8 +160,8 @@ class DiffGaussian(Rasterizer):
             rotations=rotations,
             cov3D_precomp=cov3D_precomp,
         )
-        rendered_image, radii, rendered_depth, rendered_alpha = result_list[0], result_list[1], result_list[2], result_list[3]
-        batch_size, H, W = rendered_image.shape
+        rendered_image, radii, rendered_depth, rendered_alpha = unpack_rasterizer(result_list)
+        _, H, W = rendered_image.shape
 
         xyz_map = rays_o + rendered_depth.permute(1, 2, 0) * rays_d
 
@@ -182,8 +181,10 @@ class DiffGaussian(Rasterizer):
         # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
         # They will be excluded from value updates used in the splitting criteria.
         return {
-            "render": rendered_image.clamp(0, 1),
-            "comp_rgb_bg": comp_rgb_bg.view(batch_size, H, W, -1),
+            "render": (rendered_image + (1 - rendered_alpha) * comp_rgb_bg[0].permute(2, 0, 1)).clamp(0, 1),
+            "depth": rendered_depth,
+            "mask": rendered_alpha,
+            "comp_rgb_bg": comp_rgb_bg.reshape(1, H, W, 3),
             "normal": normal_map, 
             "viewspace_points": screenspace_points,
             "visibility_filter": radii > 0,
