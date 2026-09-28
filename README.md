@@ -6,8 +6,6 @@
 
 A research integration based on [threestudio](https://github.com/threestudio-project/threestudio), combining SD guidance, MVDream and ImageDream with NeRF and Gaussian rendering. Sejun Hong describes the original work as part of NCSOFT Multimodal AI Lab research. This personal repository is not an official NCSOFT release.
 
-The historical snapshot is commit `c894bfcaba28378aee5b7ec09e50f9b2b2516c6a` (2024-02-22). The later repair adds concrete integration fixes, a common launcher, focused tests and an experimental ImageDream adaptation script. [Contribution boundaries](docs/PORTFOLIO.ko.md).
-
 ## Pipeline matrix
 
 | Entry point | Guidance | Representation | Conditioning |
