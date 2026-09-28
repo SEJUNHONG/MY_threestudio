@@ -36,4 +36,4 @@ controlnet_aux
 
 # mvdream
 open-clip-torch>=2.7.0
-git+https://github.com/DSaurus/MVDream.git
+git+https://github.com/DSaurus/MVDream.git@4113e669947f48af8852ee037a1de22629861aac
